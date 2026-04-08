@@ -136,3 +136,38 @@ def get_applications():
         "drive_title": a.drive.job_title, "company_name": a.drive.company.company_name,
         "status": a.status, "applied_at": a.applied_at.isoformat()
     } for a in Application.query.order_by(Application.applied_at.desc()).all()]), 200
+
+# ── Reports & Stats ──
+@admin_bp.route("/stats", methods=["GET"])
+@admin_required
+@cache.cached(timeout=120)
+def get_stats():
+    from sqlalchemy import func
+    status_counts = db.session.query(
+        Application.status, func.count(Application.id)
+    ).group_by(Application.status).all()
+
+    top_companies = db.session.query(
+        CompanyProfile.company_name, func.count(Application.id)
+    ).join(PlacementDrive, PlacementDrive.company_id == CompanyProfile.id
+    ).join(Application, Application.drive_id == PlacementDrive.id
+    ).filter(Application.status == "selected"
+    ).group_by(CompanyProfile.company_name
+    ).order_by(func.count(Application.id).desc()).limit(10).all()
+
+    branch_stats = db.session.query(
+        StudentProfile.branch, func.count(Application.id)
+    ).join(Application, Application.student_id == StudentProfile.id
+    ).group_by(StudentProfile.branch).all()
+
+    drives_monthly = db.session.query(
+        func.strftime('%Y-%m', PlacementDrive.created_at), func.count(PlacementDrive.id)
+    ).group_by(func.strftime('%Y-%m', PlacementDrive.created_at)
+    ).order_by(func.strftime('%Y-%m', PlacementDrive.created_at)).all()
+
+    return jsonify({
+        "status_counts": {s: c for s, c in status_counts},
+        "top_companies": [{"company": n, "selections": c} for n, c in top_companies],
+        "branch_stats": {b: c for b, c in branch_stats},
+        "drives_monthly": [{"month": m, "count": c} for m, c in drives_monthly],
+    }), 200

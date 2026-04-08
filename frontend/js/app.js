@@ -11,7 +11,7 @@ const Sidebar={props:["links"],template:`
 </div>`};
 
 function makeLayout(links){return{components:{Sidebar},template:`<div><sidebar :links="links" @logout="logout"/><div class="main"><router-view/></div></div>`,data(){return{links}},methods:{logout}}}
-const AdminLayout=makeLayout([{to:"/admin",icon:"bi bi-speedometer2",label:"Dashboard"},{to:"/admin/companies",icon:"bi bi-building",label:"Companies"},{to:"/admin/drives",icon:"bi bi-briefcase",label:"Drives"},{to:"/admin/students",icon:"bi bi-people",label:"Students"},{to:"/admin/applications",icon:"bi bi-file-text",label:"Applications"}]);
+const AdminLayout=makeLayout([{to:"/admin",icon:"bi bi-speedometer2",label:"Dashboard"},{to:"/admin/companies",icon:"bi bi-building",label:"Companies"},{to:"/admin/drives",icon:"bi bi-briefcase",label:"Drives"},{to:"/admin/students",icon:"bi bi-people",label:"Students"},{to:"/admin/applications",icon:"bi bi-file-text",label:"Applications"},{to:"/admin/stats",icon:"bi bi-bar-chart",label:"Reports"}]);
 const CompanyLayout=makeLayout([{to:"/company",icon:"bi bi-speedometer2",label:"Dashboard"},{to:"/company/drives",icon:"bi bi-briefcase",label:"My Drives"}]);
 const StudentLayout=makeLayout([{to:"/student",icon:"bi bi-speedometer2",label:"Dashboard"},{to:"/student/drives",icon:"bi bi-briefcase",label:"Browse Drives"},{to:"/student/applications",icon:"bi bi-file-text",label:"My Applications"},{to:"/student/profile",icon:"bi bi-person",label:"Profile"}]);
 
@@ -281,11 +281,43 @@ data(){return{p:{},saving:false,ok:"",err:"",branches:["CSE","ECE","EE","ME","CE
 async mounted(){this.p=(await api.get("/student/profile")).data},
 methods:{async save(){this.saving=true;this.ok="";this.err="";try{await api.put("/student/profile",this.p);this.ok="Saved!"}catch(e){this.err=e.response?.data?.error||"Failed"}finally{this.saving=false}}}};
 
+// ═══════════════════════════ ADMIN STATS ═══════════════════════════
+const AdminStats={template:`
+<div>
+  <h4 class="mb-4"><i class="bi bi-bar-chart"></i> Reports \& Statistics</h4>
+  <div class="row g-4 mb-4">
+    <div class="col-md-6"><div class="card"><div class="card-header"><strong>Applications by Status</strong></div><div class="card-body"><canvas id="ch1" height="250"></canvas></div></div></div>
+    <div class="col-md-6"><div class="card"><div class="card-header"><strong>Applications by Branch</strong></div><div class="card-body"><canvas id="ch2" height="250"></canvas></div></div></div>
+  </div>
+  <div class="row g-4">
+    <div class="col-md-6"><div class="card"><div class="card-header"><strong>Drives per Month</strong></div><div class="card-body"><canvas id="ch3" height="250"></canvas></div></div></div>
+    <div class="col-md-6"><div class="card"><div class="card-header"><strong>Top Companies by Selections</strong></div><div class="card-body">
+      <div v-if="!s.top_companies||!s.top_companies.length" class="text-muted text-center py-4">No data yet</div>
+      <table v-else class="table table-sm"><thead><tr><th>Company</th><th>Selected</th></tr></thead><tbody><tr v-for="c in s.top_companies"><td>{{c.company}}</td><td><span class="badge bg-dark">{{c.selections}}</span></td></tr></tbody></table>
+    </div></div></div>
+  </div>
+</div>`,
+data(){return{s:{},charts:[]}},
+async mounted(){try{this.s=(await api.get("/admin/stats")).data;this.$nextTick(()=>this.draw())}catch(e){}},
+methods:{draw(){
+  this.charts.forEach(c=>c.destroy());this.charts=[];
+  const clr={applied:"#999",shortlisted:"#666",selected:"#111",rejected:"#ccc"};
+  const sc=this.s.status_counts||{};
+  const c1=document.getElementById("ch1");
+  if(c1)this.charts.push(new Chart(c1,{type:"doughnut",data:{labels:Object.keys(sc).map(s=>s[0].toUpperCase()+s.slice(1)),datasets:[{data:Object.values(sc),backgroundColor:Object.keys(sc).map(s=>clr[s]||"#888")}]},options:{responsive:true,plugins:{legend:{position:"bottom"}}}}));
+  const bs=this.s.branch_stats||{};
+  const c2=document.getElementById("ch2");
+  if(c2)this.charts.push(new Chart(c2,{type:"bar",data:{labels:Object.keys(bs),datasets:[{label:"Applications",data:Object.values(bs),backgroundColor:"#333"}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}}));
+  const dm=this.s.drives_monthly||[];
+  const c3=document.getElementById("ch3");
+  if(c3)this.charts.push(new Chart(c3,{type:"line",data:{labels:dm.map(d=>d.month),datasets:[{label:"Drives",data:dm.map(d=>d.count),borderColor:"#111",tension:.3,fill:false}]},options:{responsive:true,scales:{y:{beginAtZero:true}}}}));
+}},
+beforeUnmount(){this.charts.forEach(c=>c.destroy())}};
 // ═══════════════════════════ ROUTER ═══════════════════════════
 const routes=[
   {path:"/",redirect:"/login"},{path:"/login",component:LoginPage},{path:"/register",component:RegisterPage},
   {path:"/admin",component:AdminLayout,children:[
-    {path:"",component:AdminDashboard},{path:"companies",component:AdminCompanies},{path:"drives",component:AdminDrives},{path:"students",component:AdminStudents},{path:"applications",component:AdminApplications}]},
+    {path:"",component:AdminDashboard},{path:"companies",component:AdminCompanies},{path:"drives",component:AdminDrives},{path:"students",component:AdminStudents},{path:"applications",component:AdminApplications},{path:"stats",component:AdminStats}]},
   {path:"/company",component:CompanyLayout,children:[
     {path:"",component:CompanyDashboard},{path:"drives",component:CompanyDrives},{path:"drives/:did/apps",component:CompanyApplications}]},
   {path:"/student",component:StudentLayout,children:[
