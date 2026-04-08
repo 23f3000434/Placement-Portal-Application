@@ -1,40 +1,5 @@
-// API helper — auto-detects base URL from current origin
-const API_BASE = window.location.origin + "/api";
-
-const api = axios.create({
-    baseURL: API_BASE,
-    headers: { "Content-Type": "application/json" },
-});
-
-// Attach JWT token to every request
-api.interceptors.request.use((config) => {
-    const token = localStorage.getItem("token");
-    if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-});
-
-// Handle 401 globally — redirect to login
-api.interceptors.response.use(
-    (response) => response,
-    (error) => {
-        if (error.response && error.response.status === 401) {
-            localStorage.clear();
-            window.location.hash = "#/login";
-        }
-        return Promise.reject(error);
-    }
-);
-
-// Auth helpers
-function getToken() { return localStorage.getItem("token"); }
-function getRole() { return localStorage.getItem("role"); }
-function getUserId() { return localStorage.getItem("user_id"); }
-function isLoggedIn() { return !!getToken(); }
-
-function logout() {
-    localStorage.clear();
-    window.location.hash = "#/login";
-    window.location.reload();
-}
+const api = axios.create({ baseURL: window.location.origin + "/api", headers: {"Content-Type":"application/json"} });
+api.interceptors.request.use(c => { const t = localStorage.getItem("token"); if(t) c.headers.Authorization = "Bearer "+t; return c; });
+api.interceptors.response.use(r=>r, e=>{ if(e.response && e.response.status===401){localStorage.clear();location.hash="#/login"} return Promise.reject(e); });
+function logout(){localStorage.clear();location.hash="#/login";location.reload()}
+function fmtDate(d){return d?new Date(d).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}):"-"}

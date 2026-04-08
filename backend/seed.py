@@ -2,21 +2,10 @@ from extensions import db
 from models import User
 import bcrypt
 
-
 def seed_admin():
-    existing = User.query.filter_by(role="admin").first()
-    if existing:
+    if User.query.filter_by(role="admin").first():
         return
-
-    password_hash = bcrypt.hashpw("admin123".encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-    admin = User(
-        email="admin@placement.com",
-        password=password_hash,
-        role="admin",
-        is_active=True,
-    )
-
-    db.session.add(admin)
+    pw = bcrypt.hashpw("admin123".encode(), bcrypt.gensalt()).decode()
+    db.session.add(User(email="admin@placement.com", password=pw, role="admin", is_active=True))
     db.session.commit()
-    print("Admin user created: admin@placement.com / admin123")
+    print("Admin seeded: admin@placement.com / admin123")
