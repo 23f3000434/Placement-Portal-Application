@@ -8,12 +8,12 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password = db.Column(db.String(200), nullable=False)
-    role = db.Column(db.String(20), nullable=False)
+    role = db.Column(db.String(20), nullable=False)  # admin / company / student
     is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    student_profile = db.relationship("StudentProfile", backref="user", uselist=False)
-    company_profile = db.relationship("CompanyProfile", backref="user", uselist=False)
+    student_profile = db.relationship("StudentProfile", backref="user", uselist=False, cascade="all, delete-orphan")
+    company_profile = db.relationship("CompanyProfile", backref="user", uselist=False, cascade="all, delete-orphan")
 
 
 class StudentProfile(db.Model):
@@ -28,7 +28,7 @@ class StudentProfile(db.Model):
     phone = db.Column(db.String(15))
     resume_url = db.Column(db.String(300))
 
-    applications = db.relationship("Application", backref="student", lazy=True)
+    applications = db.relationship("Application", backref="student", lazy=True, cascade="all, delete-orphan")
 
 
 class CompanyProfile(db.Model):
@@ -40,10 +40,10 @@ class CompanyProfile(db.Model):
     hr_contact = db.Column(db.String(100))
     website = db.Column(db.String(200))
     description = db.Column(db.Text)
-    approval_status = db.Column(db.String(20), default="pending")
+    approval_status = db.Column(db.String(20), default="pending")  # pending / approved / rejected
     is_blacklisted = db.Column(db.Boolean, default=False)
 
-    drives = db.relationship("PlacementDrive", backref="company", lazy=True)
+    drives = db.relationship("PlacementDrive", backref="company", lazy=True, cascade="all, delete-orphan")
 
 
 class PlacementDrive(db.Model):
@@ -55,13 +55,13 @@ class PlacementDrive(db.Model):
     job_description = db.Column(db.Text, nullable=False)
     package = db.Column(db.String(50))
     eligibility_cgpa = db.Column(db.Float, default=0.0)
-    eligibility_branch = db.Column(db.String(200))
+    eligibility_branch = db.Column(db.String(200))  # comma-separated
     eligibility_year = db.Column(db.Integer)
     deadline = db.Column(db.DateTime, nullable=False)
-    status = db.Column(db.String(20), default="pending")
+    status = db.Column(db.String(20), default="pending")  # pending / approved / closed
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    applications = db.relationship("Application", backref="drive", lazy=True)
+    applications = db.relationship("Application", backref="drive", lazy=True, cascade="all, delete-orphan")
 
 
 class Application(db.Model):
@@ -70,7 +70,7 @@ class Application(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.Integer, db.ForeignKey("student_profiles.id"), nullable=False)
     drive_id = db.Column(db.Integer, db.ForeignKey("placement_drives.id"), nullable=False)
-    status = db.Column(db.String(20), default="applied")
+    status = db.Column(db.String(20), default="applied")  # applied / shortlisted / selected / rejected
     applied_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

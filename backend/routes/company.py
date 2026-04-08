@@ -1,131 +1,183 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
-from extensions import db
+from extensions import db, cache
 from models import User, CompanyProfile, PlacementDrive, Application
-from utils import role_required
 from datetime import datetime
 
 company_bp = Blueprint("company", __name__)
 
 
-# ─── Company Dashboard ─────────────────────────────────────────
-@company_bp.route("/dashboard", methods=["GET"])
-@role_required("company")
-def dashboard():
-    user_id = int(get_jwt_identity())
-    company = CompanyProfile.query.filter_by(user_id=user_id).first_or_404()
+def company_required(fn):
+    """Decorator: ensures the user is an approved company."""
+    from functools import wraps
 
-    drives = PlacementDrive.query.filter_by(company_id=company.id).all()
+    @wraps(fn)
+    @jwt_required()
+    def wrapper(*args, **kwargs):
+        claims = get_jwt()
+        if claims.get("role") != "company":
+            return jsonify({"error": "Company access required"}), 403
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def get_company_profile():
+    """Helper to get the current company's profile."""
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    if not user or not user.company_profile:
+        return None
+    return user.company_profile
+
+
+# ──────────────────────────── Dashboard ────────────────────────────
+
+@company_bp.route("/dashboard", methods=["GET"])
+@company_required
+def dashboard():
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Company profile not found"}), 404
+
+    drives = PlacementDrive.query.filter_by(company_id=profile.id).all()
     total_applicants = sum(len(d.applications) for d in drives)
 
     return jsonify({
-        "company": {
-            "id": company.id,
-            "company_name": company.company_name,
-            "hr_contact": company.hr_contact,
-            "website": company.website,
-            "description": company.description,
-            "approval_status": company.approval_status,
-            "is_blacklisted": company.is_blacklisted
-        },
+        "company_name": profile.company_name,
+        "hr_contact": profile.hr_contact,
+        "website": profile.website,
+        "description": profile.description,
+        "approval_status": profile.approval_status,
+        "is_blacklisted": profile.is_blacklisted,
         "total_drives": len(drives),
-        "total_applicants": total_applicants
+        "total_applicants": total_applicants,
     }), 200
 
 
-# ─── Update Company Profile ────────────────────────────────────
-@company_bp.route("/profile", methods=["PUT"])
-@role_required("company")
-def update_profile():
-    user_id = int(get_jwt_identity())
-    company = CompanyProfile.query.filter_by(user_id=user_id).first_or_404()
-    data = request.get_json()
+# ──────────────────────────── Profile ────────────────────────────
 
-    company.company_name = data.get("company_name", company.company_name)
-    company.hr_contact = data.get("hr_contact", company.hr_contact)
-    company.website = data.get("website", company.website)
-    company.description = data.get("description", company.description)
+@company_bp.route("/profile", methods=["GET"])
+@company_required
+def get_profile():
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Profile not found"}), 404
+
+    return jsonify({
+        "id": profile.id,
+        "company_name": profile.company_name,
+        "hr_contact": profile.hr_contact,
+        "website": profile.website,
+        "description": profile.description,
+        "approval_status": profile.approval_status,
+        "email": profile.user.email,
+    }), 200
+
+
+@company_bp.route("/profile", methods=["PUT"])
+@company_required
+def update_profile():
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Profile not found"}), 404
+
+    data = request.get_json()
+    profile.company_name = data.get("company_name", profile.company_name)
+    profile.hr_contact = data.get("hr_contact", profile.hr_contact)
+    profile.website = data.get("website", profile.website)
+    profile.description = data.get("description", profile.description)
 
     db.session.commit()
     return jsonify({"message": "Profile updated"}), 200
 
 
-# ─── Placement Drives CRUD ─────────────────────────────────────
+# ──────────────────────────── Placement Drives ────────────────────────────
+
 @company_bp.route("/drives", methods=["GET"])
-@role_required("company")
+@company_required
 def get_drives():
-    user_id = int(get_jwt_identity())
-    company = CompanyProfile.query.filter_by(user_id=user_id).first_or_404()
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Profile not found"}), 404
 
-    drives = PlacementDrive.query.filter_by(company_id=company.id).all()
+    drives = PlacementDrive.query.filter_by(company_id=profile.id).order_by(
+        PlacementDrive.created_at.desc()
+    ).all()
 
-    return jsonify([{
-        "id": d.id,
-        "job_title": d.job_title,
-        "job_description": d.job_description,
-        "package": d.package,
-        "eligibility_cgpa": d.eligibility_cgpa,
-        "eligibility_branch": d.eligibility_branch,
-        "eligibility_year": d.eligibility_year,
-        "deadline": d.deadline.isoformat() if d.deadline else None,
-        "status": d.status,
-        "application_count": len(d.applications),
-        "created_at": d.created_at.isoformat()
-    } for d in drives]), 200
+    result = []
+    for d in drives:
+        result.append({
+            "id": d.id,
+            "job_title": d.job_title,
+            "job_description": d.job_description,
+            "package": d.package,
+            "eligibility_cgpa": d.eligibility_cgpa,
+            "eligibility_branch": d.eligibility_branch,
+            "eligibility_year": d.eligibility_year,
+            "deadline": d.deadline.isoformat() if d.deadline else None,
+            "status": d.status,
+            "total_applications": len(d.applications),
+            "created_at": d.created_at.isoformat(),
+        })
+
+    return jsonify(result), 200
 
 
 @company_bp.route("/drives", methods=["POST"])
-@role_required("company")
+@company_required
 def create_drive():
-    user_id = int(get_jwt_identity())
-    company = CompanyProfile.query.filter_by(user_id=user_id).first_or_404()
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Profile not found"}), 404
 
-    # Only approved companies can create drives
-    if company.approval_status != "approved":
-        return jsonify({"error": "Company must be approved by admin before creating drives"}), 403
+    if profile.approval_status != "approved":
+        return jsonify({"error": "Your company must be approved by admin before creating drives"}), 403
 
-    if company.is_blacklisted:
-        return jsonify({"error": "Company is blacklisted"}), 403
+    if profile.is_blacklisted:
+        return jsonify({"error": "Your company is blacklisted"}), 403
 
     data = request.get_json()
-    job_title = data.get("job_title")
-    job_description = data.get("job_description")
-    deadline = data.get("deadline")
 
-    if not all([job_title, job_description, deadline]):
-        return jsonify({"error": "job_title, job_description, and deadline are required"}), 400
+    job_title = data.get("job_title", "").strip()
+    job_description = data.get("job_description", "").strip()
+    deadline_str = data.get("deadline", "").strip()
+
+    if not job_title or not job_description or not deadline_str:
+        return jsonify({"error": "Job title, description, and deadline are required"}), 400
 
     try:
-        deadline_dt = datetime.fromisoformat(deadline)
+        deadline = datetime.fromisoformat(deadline_str)
     except ValueError:
         return jsonify({"error": "Invalid deadline format. Use ISO format: YYYY-MM-DDTHH:MM:SS"}), 400
 
     drive = PlacementDrive(
-        company_id=company.id,
+        company_id=profile.id,
         job_title=job_title,
         job_description=job_description,
-        package=data.get("package"),
+        package=data.get("package", ""),
         eligibility_cgpa=float(data.get("eligibility_cgpa", 0)),
-        eligibility_branch=data.get("eligibility_branch"),
-        eligibility_year=int(data.get("eligibility_year")) if data.get("eligibility_year") else None,
-        deadline=deadline_dt
+        eligibility_branch=data.get("eligibility_branch", ""),
+        eligibility_year=int(data.get("eligibility_year", 0)) if data.get("eligibility_year") else None,
+        deadline=deadline,
     )
 
     db.session.add(drive)
     db.session.commit()
+    cache.clear()
 
     return jsonify({"message": "Drive created, pending admin approval", "drive_id": drive.id}), 201
 
 
 @company_bp.route("/drives/<int:drive_id>", methods=["PUT"])
-@role_required("company")
+@company_required
 def update_drive(drive_id):
-    user_id = int(get_jwt_identity())
-    company = CompanyProfile.query.filter_by(user_id=user_id).first_or_404()
-    drive = PlacementDrive.query.get_or_404(drive_id)
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Profile not found"}), 404
 
-    # Make sure this drive belongs to this company
-    if drive.company_id != company.id:
+    drive = PlacementDrive.query.get_or_404(drive_id)
+    if drive.company_id != profile.id:
         return jsonify({"error": "Not your drive"}), 403
 
     data = request.get_json()
@@ -134,9 +186,7 @@ def update_drive(drive_id):
     drive.package = data.get("package", drive.package)
     drive.eligibility_cgpa = float(data.get("eligibility_cgpa", drive.eligibility_cgpa))
     drive.eligibility_branch = data.get("eligibility_branch", drive.eligibility_branch)
-
-    if data.get("eligibility_year"):
-        drive.eligibility_year = int(data["eligibility_year"])
+    drive.eligibility_year = data.get("eligibility_year", drive.eligibility_year)
 
     if data.get("deadline"):
         try:
@@ -145,67 +195,80 @@ def update_drive(drive_id):
             return jsonify({"error": "Invalid deadline format"}), 400
 
     db.session.commit()
+    cache.clear()
     return jsonify({"message": "Drive updated"}), 200
 
 
 @company_bp.route("/drives/<int:drive_id>/close", methods=["PUT"])
-@role_required("company")
+@company_required
 def close_drive(drive_id):
-    user_id = int(get_jwt_identity())
-    company = CompanyProfile.query.filter_by(user_id=user_id).first_or_404()
-    drive = PlacementDrive.query.get_or_404(drive_id)
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Profile not found"}), 404
 
-    if drive.company_id != company.id:
+    drive = PlacementDrive.query.get_or_404(drive_id)
+    if drive.company_id != profile.id:
         return jsonify({"error": "Not your drive"}), 403
 
     drive.status = "closed"
     db.session.commit()
+    cache.clear()
     return jsonify({"message": "Drive closed"}), 200
 
 
-# ─── Application Management ────────────────────────────────────
-@company_bp.route("/drives/<int:drive_id>/applications", methods=["GET"])
-@role_required("company")
-def get_applications(drive_id):
-    user_id = int(get_jwt_identity())
-    company = CompanyProfile.query.filter_by(user_id=user_id).first_or_404()
-    drive = PlacementDrive.query.get_or_404(drive_id)
+# ──────────────────────────── Application Management ────────────────────────────
 
-    if drive.company_id != company.id:
+@company_bp.route("/drives/<int:drive_id>/applications", methods=["GET"])
+@company_required
+def get_applications(drive_id):
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Profile not found"}), 404
+
+    drive = PlacementDrive.query.get_or_404(drive_id)
+    if drive.company_id != profile.id:
         return jsonify({"error": "Not your drive"}), 403
 
     applications = Application.query.filter_by(drive_id=drive_id).all()
 
-    return jsonify([{
-        "id": a.id,
-        "student_id": a.student_id,
-        "student_name": a.student.name,
-        "student_branch": a.student.branch,
-        "student_cgpa": a.student.cgpa,
-        "student_email": a.student.user.email,
-        "status": a.status,
-        "applied_at": a.applied_at.isoformat()
-    } for a in applications]), 200
+    result = []
+    for a in applications:
+        result.append({
+            "id": a.id,
+            "student_id": a.student_id,
+            "student_name": a.student.name,
+            "student_email": a.student.user.email,
+            "student_branch": a.student.branch,
+            "student_cgpa": a.student.cgpa,
+            "student_year": a.student.year,
+            "student_phone": a.student.phone,
+            "resume_url": a.student.resume_url,
+            "status": a.status,
+            "applied_at": a.applied_at.isoformat(),
+        })
+
+    return jsonify(result), 200
 
 
 @company_bp.route("/applications/<int:app_id>/status", methods=["PUT"])
-@role_required("company")
+@company_required
 def update_application_status(app_id):
-    user_id = int(get_jwt_identity())
-    company = CompanyProfile.query.filter_by(user_id=user_id).first_or_404()
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Profile not found"}), 404
 
     application = Application.query.get_or_404(app_id)
-    drive = PlacementDrive.query.get(application.drive_id)
 
-    # Verify this application belongs to a drive owned by this company
-    if drive.company_id != company.id:
-        return jsonify({"error": "Not your application to manage"}), 403
+    # Verify this application belongs to one of the company's drives
+    drive = PlacementDrive.query.get(application.drive_id)
+    if not drive or drive.company_id != profile.id:
+        return jsonify({"error": "Not authorized"}), 403
 
     data = request.get_json()
-    new_status = data.get("status")
+    new_status = data.get("status", "").strip()
 
     if new_status not in ("shortlisted", "selected", "rejected"):
-        return jsonify({"error": "Status must be shortlisted, selected, or rejected"}), 400
+        return jsonify({"error": "Status must be 'shortlisted', 'selected', or 'rejected'"}), 400
 
     application.status = new_status
     db.session.commit()
