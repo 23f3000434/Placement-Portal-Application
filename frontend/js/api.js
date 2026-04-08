@@ -1,5 +1,5 @@
-// API helper — wraps axios with auth token and base URL
-const API_BASE = "http://localhost:5000/api";
+// API helper — auto-detects base URL from current origin
+const API_BASE = window.location.origin + "/api";
 
 const api = axios.create({
     baseURL: API_BASE,
@@ -15,11 +15,11 @@ api.interceptors.request.use((config) => {
     return config;
 });
 
-// Handle 401/403 globally — redirect to login
+// Handle 401 globally — redirect to login
 api.interceptors.response.use(
     (response) => response,
     (error) => {
-        if (error.response && (error.response.status === 401)) {
+        if (error.response && error.response.status === 401) {
             localStorage.clear();
             window.location.hash = "#/login";
         }
@@ -36,4 +36,5 @@ function isLoggedIn() { return !!getToken(); }
 function logout() {
     localStorage.clear();
     window.location.hash = "#/login";
+    window.location.reload();
 }
