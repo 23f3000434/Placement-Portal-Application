@@ -62,7 +62,7 @@ def update_profile():
     db.session.commit()
     return jsonify({"message": "Profile updated"}), 200
 
-# ── Browse approved drives ──
+# ── Browse approved drives (search by title, company, branch) ──
 @student_bp.route("/drives", methods=["GET"])
 @student_required
 @cache.cached(timeout=60, query_string=True)
@@ -70,8 +70,16 @@ def get_drives():
     q = PlacementDrive.query.filter_by(status="approved").filter(PlacementDrive.deadline > datetime.utcnow())
     search = request.args.get("search","").strip()
     branch = request.args.get("branch","").strip()
+
     if search:
-        q = q.filter(db.or_(PlacementDrive.job_title.ilike(f"%{search}%"), PlacementDrive.job_description.ilike(f"%{search}%")))
+        # Search across job title, description, AND company name
+        q = q.join(CompanyProfile, PlacementDrive.company_id == CompanyProfile.id).filter(
+            db.or_(
+                PlacementDrive.job_title.ilike(f"%{search}%"),
+                PlacementDrive.job_description.ilike(f"%{search}%"),
+                CompanyProfile.company_name.ilike(f"%{search}%"),
+            )
+        )
     if branch:
         q = q.filter(PlacementDrive.eligibility_branch.ilike(f"%{branch}%"))
 
@@ -113,7 +121,7 @@ def apply(did):
     db.session.commit(); cache.clear()
     return jsonify({"message": "Applied successfully"}), 201
 
-# ── My Applications (placement history) ──
+# ── My Applications (complete placement history) ──
 @student_bp.route("/applications", methods=["GET"])
 @student_required
 def my_applications():
@@ -126,7 +134,7 @@ def my_applications():
         "deadline": a.drive.deadline.isoformat() if a.drive.deadline else None
     } for a in Application.query.filter_by(student_id=p.id).order_by(Application.applied_at.desc()).all()]), 200
 
-# ── Export CSV ──
+# ── Export CSV (triggers Celery batch job, alert when done) ──
 @student_bp.route("/export", methods=["POST"])
 @student_required
 def export_csv():
@@ -135,13 +143,21 @@ def export_csv():
     try:
         from tasks import export_student_applications
         task = export_student_applications.delay(p.id, p.user.email)
-        return jsonify({"message": "Export started, you'll be notified", "task_id": task.id}), 202
+        return jsonify({
+            "message": "Export started! You'll receive an email alert when it's ready.",
+            "task_id": task.id
+        }), 202
     except Exception:
+        # Celery/Redis not running — synchronous fallback
         import csv, io
         apps = Application.query.filter_by(student_id=p.id).all()
         out = io.StringIO()
         w = csv.writer(out)
-        w.writerow(["Student ID","Company Name","Drive Title","Status","Applied Date"])
+        w.writerow(["Student ID", "Company Name", "Drive Title", "Application Status", "Applied Date"])
         for a in apps:
             w.writerow([p.id, a.drive.company.company_name, a.drive.job_title, a.status, a.applied_at.isoformat()])
-        return jsonify({"message": "Export complete", "csv_data": out.getvalue()}), 200
+        return jsonify({
+            "message": "Export complete! Download starting...",
+            "csv_data": out.getvalue(),
+            "alert": True
+        }), 200
