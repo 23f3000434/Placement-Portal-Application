@@ -62,6 +62,7 @@ class PlacementDrive(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     applications = db.relationship("Application", backref="drive", lazy=True, cascade="all, delete-orphan")
+    interviews = db.relationship("Interview", backref="drive", lazy=True, cascade="all, delete-orphan")
 
 
 class Application(db.Model):
@@ -77,3 +78,20 @@ class Application(db.Model):
     __table_args__ = (
         db.UniqueConstraint("student_id", "drive_id", name="unique_student_drive"),
     )
+
+
+class Interview(db.Model):
+    """Scheduled interview for a placement drive — companies can schedule these."""
+    __tablename__ = "interviews"
+
+    id = db.Column(db.Integer, primary_key=True)
+    drive_id = db.Column(db.Integer, db.ForeignKey("placement_drives.id"), nullable=False)
+    student_id = db.Column(db.Integer, db.ForeignKey("student_profiles.id"), nullable=False)
+    scheduled_date = db.Column(db.DateTime, nullable=False)
+    interview_type = db.Column(db.String(50), default="online")  # online / in-person
+    location = db.Column(db.String(200))  # meeting link or physical location
+    notes = db.Column(db.Text)
+    status = db.Column(db.String(20), default="scheduled")  # scheduled / completed / cancelled
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    student = db.relationship("StudentProfile", backref="interviews")

@@ -17,6 +17,7 @@ const routes = [
             { path: "drives", component: AdminDrives },
             { path: "students", component: AdminStudents },
             { path: "applications", component: AdminApplications },
+            { path: "stats", component: AdminStats },
         ],
     },
 
@@ -28,6 +29,7 @@ const routes = [
             { path: "", component: CompanyDashboard },
             { path: "drives", component: CompanyDrives },
             { path: "drives/:driveId/applications", component: CompanyApplications },
+            { path: "interviews", component: CompanyInterviews },
         ],
     },
 
@@ -55,9 +57,7 @@ router.beforeEach((to, from, next) => {
     const token = localStorage.getItem("token");
     const role = localStorage.getItem("role");
 
-    // If going to a public page, allow
     if (publicPages.includes(to.path)) {
-        // If already logged in, redirect to dashboard
         if (token && role) {
             const dashboards = { admin: "/admin", company: "/company", student: "/student" };
             return next(dashboards[role] || "/login");
@@ -65,12 +65,11 @@ router.beforeEach((to, from, next) => {
         return next();
     }
 
-    // If not logged in, redirect to login
     if (!token) {
         return next("/login");
     }
 
-    // Check role-based access
+    // Role-based access control
     if (to.path.startsWith("/admin") && role !== "admin") return next("/login");
     if (to.path.startsWith("/company") && role !== "company") return next("/login");
     if (to.path.startsWith("/student") && role !== "student") return next("/login");

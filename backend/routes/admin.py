@@ -34,7 +34,9 @@ def dashboard():
         "pending_companies": CompanyProfile.query.filter_by(approval_status="pending").count(),
         "pending_drives": PlacementDrive.query.filter_by(status="pending").count(),
         "approved_drives": PlacementDrive.query.filter_by(status="approved").count(),
+        "closed_drives": PlacementDrive.query.filter_by(status="closed").count(),
         "students_placed": Application.query.filter_by(status="selected").count(),
+        "students_shortlisted": Application.query.filter_by(status="shortlisted").count(),
     }
     return jsonify(stats), 200
 
@@ -44,7 +46,7 @@ def dashboard():
 @admin_bp.route("/companies", methods=["GET"])
 @admin_required
 def get_companies():
-    status_filter = request.args.get("status")  # pending / approved / rejected
+    status_filter = request.args.get("status")
     search = request.args.get("search", "").strip()
 
     query = CompanyProfile.query
@@ -53,7 +55,12 @@ def get_companies():
         query = query.filter_by(approval_status=status_filter)
 
     if search:
-        query = query.filter(CompanyProfile.company_name.ilike(f"%{search}%"))
+        query = query.filter(
+            db.or_(
+                CompanyProfile.company_name.ilike(f"%{search}%"),
+                CompanyProfile.hr_contact.ilike(f"%{search}%"),
+            )
+        )
 
     companies = query.all()
 
@@ -68,6 +75,7 @@ def get_companies():
             "description": c.description,
             "approval_status": c.approval_status,
             "is_blacklisted": c.is_blacklisted,
+            "is_active": c.user.is_active,
             "email": c.user.email,
             "total_drives": len(c.drives),
         })
@@ -120,7 +128,12 @@ def get_drives():
         query = query.filter_by(status=status_filter)
 
     if search:
-        query = query.filter(PlacementDrive.job_title.ilike(f"%{search}%"))
+        query = query.filter(
+            db.or_(
+                PlacementDrive.job_title.ilike(f"%{search}%"),
+                PlacementDrive.job_description.ilike(f"%{search}%"),
+            )
+        )
 
     drives = query.order_by(PlacementDrive.created_at.desc()).all()
 
@@ -238,10 +251,66 @@ def get_all_applications():
             "id": a.id,
             "student_name": a.student.name,
             "student_branch": a.student.branch,
+            "student_cgpa": a.student.cgpa,
             "drive_title": a.drive.job_title,
             "company_name": a.drive.company.company_name,
+            "package": a.drive.package,
             "status": a.status,
             "applied_at": a.applied_at.isoformat(),
         })
 
     return jsonify(result), 200
+
+
+# ──────────────────────────── Placement Statistics / Reports ────────────────────────────
+
+@admin_bp.route("/stats", methods=["GET"])
+@admin_required
+@cache.cached(timeout=120)
+def get_stats():
+    """Detailed placement statistics for the admin reports page."""
+    from sqlalchemy import func
+
+    # Applications by status
+    status_counts = db.session.query(
+        Application.status, func.count(Application.id)
+    ).group_by(Application.status).all()
+
+    # Top companies by selections
+    top_companies = db.session.query(
+        CompanyProfile.company_name,
+        func.count(Application.id)
+    ).join(
+        PlacementDrive, PlacementDrive.company_id == CompanyProfile.id
+    ).join(
+        Application, Application.drive_id == PlacementDrive.id
+    ).filter(
+        Application.status == "selected"
+    ).group_by(CompanyProfile.company_name).order_by(
+        func.count(Application.id).desc()
+    ).limit(10).all()
+
+    # Applications per branch
+    branch_stats = db.session.query(
+        StudentProfile.branch,
+        func.count(Application.id)
+    ).join(
+        Application, Application.student_id == StudentProfile.id
+    ).group_by(StudentProfile.branch).all()
+
+    # Drives per month
+    drives_by_month = db.session.query(
+        func.strftime('%Y-%m', PlacementDrive.created_at),
+        func.count(PlacementDrive.id)
+    ).group_by(
+        func.strftime('%Y-%m', PlacementDrive.created_at)
+    ).order_by(
+        func.strftime('%Y-%m', PlacementDrive.created_at)
+    ).all()
+
+    return jsonify({
+        "status_counts": {s: c for s, c in status_counts},
+        "top_companies": [{"company": name, "selections": count} for name, count in top_companies],
+        "branch_stats": {branch: count for branch, count in branch_stats},
+        "drives_by_month": [{"month": m, "count": c} for m, c in drives_by_month],
+    }), 200

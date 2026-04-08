@@ -1,14 +1,14 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from extensions import db, cache
-from models import User, CompanyProfile, PlacementDrive, Application
+from models import User, CompanyProfile, PlacementDrive, Application, Interview, StudentProfile
 from datetime import datetime
 
 company_bp = Blueprint("company", __name__)
 
 
 def company_required(fn):
-    """Decorator: ensures the user is an approved company."""
+    """Decorator: ensures the user is a company."""
     from functools import wraps
 
     @wraps(fn)
@@ -23,7 +23,6 @@ def company_required(fn):
 
 
 def get_company_profile():
-    """Helper to get the current company's profile."""
     user_id = int(get_jwt_identity())
     user = User.query.get(user_id)
     if not user or not user.company_profile:
@@ -42,6 +41,9 @@ def dashboard():
 
     drives = PlacementDrive.query.filter_by(company_id=profile.id).all()
     total_applicants = sum(len(d.applications) for d in drives)
+    selected_count = sum(
+        1 for d in drives for a in d.applications if a.status == "selected"
+    )
 
     return jsonify({
         "company_name": profile.company_name,
@@ -52,6 +54,7 @@ def dashboard():
         "is_blacklisted": profile.is_blacklisted,
         "total_drives": len(drives),
         "total_applicants": total_applicants,
+        "selected_count": selected_count,
     }), 200
 
 
@@ -83,7 +86,11 @@ def update_profile():
         return jsonify({"error": "Profile not found"}), 404
 
     data = request.get_json()
-    profile.company_name = data.get("company_name", profile.company_name)
+    if not data:
+        return jsonify({"error": "Request body required"}), 400
+
+    if data.get("company_name", "").strip():
+        profile.company_name = data["company_name"].strip()
     profile.hr_contact = data.get("hr_contact", profile.hr_contact)
     profile.website = data.get("website", profile.website)
     profile.description = data.get("description", profile.description)
@@ -138,27 +145,45 @@ def create_drive():
         return jsonify({"error": "Your company is blacklisted"}), 403
 
     data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body required"}), 400
 
     job_title = data.get("job_title", "").strip()
     job_description = data.get("job_description", "").strip()
     deadline_str = data.get("deadline", "").strip()
 
-    if not job_title or not job_description or not deadline_str:
-        return jsonify({"error": "Job title, description, and deadline are required"}), 400
+    if not job_title:
+        return jsonify({"error": "Job title is required"}), 400
+    if not job_description:
+        return jsonify({"error": "Job description is required"}), 400
+    if not deadline_str:
+        return jsonify({"error": "Deadline is required"}), 400
 
     try:
         deadline = datetime.fromisoformat(deadline_str)
     except ValueError:
         return jsonify({"error": "Invalid deadline format. Use ISO format: YYYY-MM-DDTHH:MM:SS"}), 400
 
+    if deadline < datetime.utcnow():
+        return jsonify({"error": "Deadline must be in the future"}), 400
+
+    eligibility_cgpa = 0
+    if data.get("eligibility_cgpa"):
+        try:
+            eligibility_cgpa = float(data["eligibility_cgpa"])
+            if eligibility_cgpa < 0 or eligibility_cgpa > 10:
+                return jsonify({"error": "CGPA must be between 0 and 10"}), 400
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid CGPA value"}), 400
+
     drive = PlacementDrive(
         company_id=profile.id,
         job_title=job_title,
         job_description=job_description,
-        package=data.get("package", ""),
-        eligibility_cgpa=float(data.get("eligibility_cgpa", 0)),
-        eligibility_branch=data.get("eligibility_branch", ""),
-        eligibility_year=int(data.get("eligibility_year", 0)) if data.get("eligibility_year") else None,
+        package=data.get("package", "").strip(),
+        eligibility_cgpa=eligibility_cgpa,
+        eligibility_branch=data.get("eligibility_branch", "").strip().upper(),
+        eligibility_year=int(data["eligibility_year"]) if data.get("eligibility_year") else None,
         deadline=deadline,
     )
 
@@ -181,10 +206,13 @@ def update_drive(drive_id):
         return jsonify({"error": "Not your drive"}), 403
 
     data = request.get_json()
-    drive.job_title = data.get("job_title", drive.job_title)
-    drive.job_description = data.get("job_description", drive.job_description)
+    if data.get("job_title", "").strip():
+        drive.job_title = data["job_title"].strip()
+    if data.get("job_description", "").strip():
+        drive.job_description = data["job_description"].strip()
     drive.package = data.get("package", drive.package)
-    drive.eligibility_cgpa = float(data.get("eligibility_cgpa", drive.eligibility_cgpa))
+    if data.get("eligibility_cgpa") is not None:
+        drive.eligibility_cgpa = float(data["eligibility_cgpa"])
     drive.eligibility_branch = data.get("eligibility_branch", drive.eligibility_branch)
     drive.eligibility_year = data.get("eligibility_year", drive.eligibility_year)
 
@@ -259,7 +287,6 @@ def update_application_status(app_id):
 
     application = Application.query.get_or_404(app_id)
 
-    # Verify this application belongs to one of the company's drives
     drive = PlacementDrive.query.get(application.drive_id)
     if not drive or drive.company_id != profile.id:
         return jsonify({"error": "Not authorized"}), 403
@@ -274,3 +301,112 @@ def update_application_status(app_id):
     db.session.commit()
 
     return jsonify({"message": f"Application status updated to {new_status}"}), 200
+
+
+# ──────────────────────────── Interview Scheduling ────────────────────────────
+
+@company_bp.route("/drives/<int:drive_id>/interviews", methods=["GET"])
+@company_required
+def get_interviews(drive_id):
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Profile not found"}), 404
+
+    drive = PlacementDrive.query.get_or_404(drive_id)
+    if drive.company_id != profile.id:
+        return jsonify({"error": "Not your drive"}), 403
+
+    interviews = Interview.query.filter_by(drive_id=drive_id).order_by(Interview.scheduled_date.asc()).all()
+
+    result = []
+    for i in interviews:
+        result.append({
+            "id": i.id,
+            "student_id": i.student_id,
+            "student_name": i.student.name,
+            "student_email": i.student.user.email,
+            "scheduled_date": i.scheduled_date.isoformat(),
+            "interview_type": i.interview_type,
+            "location": i.location,
+            "notes": i.notes,
+            "status": i.status,
+        })
+
+    return jsonify(result), 200
+
+
+@company_bp.route("/drives/<int:drive_id>/interviews", methods=["POST"])
+@company_required
+def schedule_interview(drive_id):
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Profile not found"}), 404
+
+    drive = PlacementDrive.query.get_or_404(drive_id)
+    if drive.company_id != profile.id:
+        return jsonify({"error": "Not your drive"}), 403
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body required"}), 400
+
+    student_id = data.get("student_id")
+    scheduled_date_str = data.get("scheduled_date", "").strip()
+
+    if not student_id:
+        return jsonify({"error": "Student ID is required"}), 400
+    if not scheduled_date_str:
+        return jsonify({"error": "Scheduled date is required"}), 400
+
+    # Verify student has applied to this drive
+    application = Application.query.filter_by(student_id=student_id, drive_id=drive_id).first()
+    if not application:
+        return jsonify({"error": "Student has not applied to this drive"}), 400
+
+    try:
+        scheduled_date = datetime.fromisoformat(scheduled_date_str)
+    except ValueError:
+        return jsonify({"error": "Invalid date format"}), 400
+
+    interview = Interview(
+        drive_id=drive_id,
+        student_id=student_id,
+        scheduled_date=scheduled_date,
+        interview_type=data.get("interview_type", "online").strip(),
+        location=data.get("location", "").strip(),
+        notes=data.get("notes", "").strip(),
+    )
+
+    db.session.add(interview)
+    db.session.commit()
+
+    return jsonify({"message": "Interview scheduled", "interview_id": interview.id}), 201
+
+
+@company_bp.route("/interviews/<int:interview_id>", methods=["PUT"])
+@company_required
+def update_interview(interview_id):
+    profile = get_company_profile()
+    if not profile:
+        return jsonify({"error": "Profile not found"}), 404
+
+    interview = Interview.query.get_or_404(interview_id)
+    drive = PlacementDrive.query.get(interview.drive_id)
+    if not drive or drive.company_id != profile.id:
+        return jsonify({"error": "Not authorized"}), 403
+
+    data = request.get_json()
+
+    if data.get("scheduled_date"):
+        try:
+            interview.scheduled_date = datetime.fromisoformat(data["scheduled_date"])
+        except ValueError:
+            return jsonify({"error": "Invalid date format"}), 400
+
+    interview.interview_type = data.get("interview_type", interview.interview_type)
+    interview.location = data.get("location", interview.location)
+    interview.notes = data.get("notes", interview.notes)
+    interview.status = data.get("status", interview.status)
+
+    db.session.commit()
+    return jsonify({"message": "Interview updated"}), 200

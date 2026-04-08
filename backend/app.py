@@ -1,4 +1,4 @@
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, render_template
 from flask_cors import CORS
 from config import Config
 from extensions import db, jwt, cache, mail
@@ -7,7 +7,12 @@ import os
 
 
 def create_app():
-    app = Flask(__name__, static_folder="../frontend/dist", static_url_path="/")
+    app = Flask(
+        __name__,
+        template_folder=os.path.join(os.path.dirname(__file__), "..", "frontend"),
+        static_folder=os.path.join(os.path.dirname(__file__), "..", "frontend"),
+        static_url_path="/static",
+    )
     app.config.from_object(Config)
 
     # Initialize extensions
@@ -19,7 +24,6 @@ def create_app():
     # Initialize cache with fallback to simple cache if Redis isn't running
     try:
         cache.init_app(app)
-        # Test Redis connection
         with app.app_context():
             cache.get("test")
     except Exception:
@@ -43,19 +47,18 @@ def create_app():
         db.create_all()
         seed_admin()
 
-    # Serve Vue frontend in production
+    # Jinja2 entry point — serves the Vue SPA
     @app.route("/")
-    def serve_frontend():
-        return send_from_directory(app.static_folder, "index.html")
+    def index():
+        return render_template("index.html")
 
+    # Handle client-side routing — all non-API routes serve the SPA
     @app.errorhandler(404)
     def not_found(e):
-        # If API route not found, return JSON error
-        from flask import request
-        if request.path.startswith("/api/"):
+        from flask import request as req
+        if req.path.startswith("/api/"):
             return {"error": "Not found"}, 404
-        # Otherwise serve Vue app (client-side routing)
-        return send_from_directory(app.static_folder, "index.html")
+        return render_template("index.html")
 
     return app
 
