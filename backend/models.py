@@ -1,5 +1,9 @@
 from extensions import db
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 class User(db.Model):
@@ -9,7 +13,7 @@ class User(db.Model):
     password = db.Column(db.String(200), nullable=False)
     role = db.Column(db.String(20), nullable=False)
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_utcnow)
     student_profile = db.relationship("StudentProfile", backref="user", uselist=False, cascade="all, delete-orphan")
     company_profile = db.relationship("CompanyProfile", backref="user", uselist=False, cascade="all, delete-orphan")
 
@@ -52,7 +56,7 @@ class PlacementDrive(db.Model):
     eligibility_year = db.Column(db.Integer)
     deadline = db.Column(db.DateTime, nullable=False)
     status = db.Column(db.String(20), default="pending")
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_utcnow)
     applications = db.relationship("Application", backref="drive", lazy=True, cascade="all, delete-orphan")
 
 
@@ -62,6 +66,10 @@ class Application(db.Model):
     student_id = db.Column(db.Integer, db.ForeignKey("student_profiles.id"), nullable=False)
     drive_id = db.Column(db.Integer, db.ForeignKey("placement_drives.id"), nullable=False)
     status = db.Column(db.String(20), default="applied")
-    applied_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    applied_at = db.Column(db.DateTime, default=_utcnow)
+    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
+    # Interview scheduling fields
+    interview_date = db.Column(db.DateTime, nullable=True)
+    interview_link = db.Column(db.String(300), nullable=True)
+    interview_notes = db.Column(db.Text, nullable=True)
     __table_args__ = (db.UniqueConstraint("student_id", "drive_id", name="unique_student_drive"),)

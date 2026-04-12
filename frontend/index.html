@@ -9,7 +9,7 @@
     <style>
         :root{--sb:220px}
         body{background:#fafafa;font-family:system-ui,-apple-system,sans-serif}
-        .sidebar{width:var(--sb);min-height:100vh;background:#111;position:fixed;left:0;top:0;z-index:100}
+        .sidebar{width:var(--sb);min-height:100vh;background:#111;position:fixed;left:0;top:0;z-index:100;transition:transform .3s}
         .sidebar .brand{color:#fff;font-size:1.1rem;font-weight:700;padding:18px 16px;border-bottom:1px solid #333}
         .sidebar .nav-link{color:#aaa;padding:10px 16px;font-size:.9rem}
         .sidebar .nav-link:hover,.sidebar .nav-link.active{color:#fff;background:#222}
@@ -33,9 +33,16 @@
         .btn-dark:hover{background:#333;border-color:#333}
         .btn-outline-dark{border-color:#333;color:#333}
         .btn-outline-dark:hover{background:#111;color:#fff}
+        .mobile-nav{display:none;background:#111;padding:10px 16px;position:fixed;top:0;left:0;right:0;z-index:99}
+        .mobile-nav .brand{color:#fff;font-weight:700;font-size:1.1rem}
+        .mobile-nav .btn{color:#fff;font-size:1.3rem;padding:0}
+        .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:99}
         @media(max-width:768px){
-            .sidebar{display:none}
-            .main{margin-left:0;padding:16px}
+            .sidebar{transform:translateX(-100%)}
+            .sidebar.open{transform:translateX(0)}
+            .sidebar-overlay.open{display:block}
+            .mobile-nav{display:flex;justify-content:space-between;align-items:center}
+            .main{margin-left:0;padding:16px;padding-top:60px}
         }
     </style>
 </head>

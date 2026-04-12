@@ -1,5 +1,7 @@
 import os
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "a-very-long-secret-key-for-placement-portal-2026")
     SQLALCHEMY_DATABASE_URI = "sqlite:///placement.db"
@@ -16,3 +18,5 @@ class Config:
     MAIL_USERNAME = os.environ.get("MAIL_USERNAME", "")
     MAIL_PASSWORD = os.environ.get("MAIL_PASSWORD", "")
     MAIL_DEFAULT_SENDER = os.environ.get("MAIL_DEFAULT_SENDER", "placement@institute.com")
+    UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+    MAX_CONTENT_LENGTH = 5 * 1024 * 1024  # 5 MB
