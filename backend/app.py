@@ -2,7 +2,7 @@ from flask import Flask, render_template, send_from_directory
 from flask_cors import CORS
 from config import Config
 from extensions import db, jwt, cache, mail
-from seed import seed_admin
+from seed import seed_admin, seed_demo_data
 import os
 
 
@@ -24,7 +24,6 @@ def create_app():
         app.config["CACHE_TYPE"] = "SimpleCache"
         cache.init_app(app)
 
-    # Ensure upload directory exists
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
     os.makedirs(os.path.join(app.config["UPLOAD_FOLDER"], "resumes"), exist_ok=True)
 
@@ -40,6 +39,7 @@ def create_app():
     with app.app_context():
         db.create_all()
         seed_admin()
+        seed_demo_data()
 
     @app.route("/")
     def index():
