@@ -2,10 +2,49 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from extensions import db, cache
 from models import User, CompanyProfile, PlacementDrive, Application
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
+import re
 
 company_bp = Blueprint("company", __name__)
+
+
+def _as_text(val):
+    if val is None:
+        return ""
+    return str(val).strip()
+
+
+def _parse_deadline(dl: str):
+    """Accept datetime-local, ISO 8601, and JS Date.toISOString() (Z). Store naive UTC."""
+    s = _as_text(dl)
+    if not s:
+        raise ValueError("empty deadline")
+    s = s.replace("Z", "+00:00")
+    if " " in s and "T" not in s:
+        s = s.replace(" ", "T", 1)
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        s2 = re.sub(r"\.\d+(?=[+-]|$)", "", s)
+        try:
+            dt = datetime.fromisoformat(s2)
+        except ValueError as ex:
+            raise ValueError("unparseable deadline") from ex
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _opt_eligibility_year(val):
+    if val is None:
+        return None
+    if isinstance(val, str) and not val.strip():
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid eligibility year")
 
 
 def company_required(fn):
@@ -100,22 +139,32 @@ def create_drive():
     if p.is_blacklisted:
         return jsonify({"error": "Company is blacklisted"}), 403
     d = request.get_json() or {}
-    title = d.get("job_title", "").strip()
-    desc = d.get("job_description", "").strip()
-    dl = d.get("deadline", "").strip()
+    title = _as_text(d.get("job_title"))
+    desc = _as_text(d.get("job_description"))
+    dl = _as_text(d.get("deadline"))
     if not title or not desc or not dl:
         return jsonify({"error": "Title, description, and deadline required"}), 400
     try:
-        deadline = datetime.fromisoformat(dl)
+        deadline = _parse_deadline(dl)
     except ValueError:
-        return jsonify({"error": "Invalid deadline format"}), 400
+        return jsonify({"error": "Invalid deadline format. Use the date picker or ISO date-time."}), 400
+
+    try:
+        elig_year = _opt_eligibility_year(d.get("eligibility_year"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    try:
+        elig_cgpa = float(d.get("eligibility_cgpa", 0) or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid min CGPA"}), 400
 
     drive = PlacementDrive(
         company_id=p.id, job_title=title, job_description=desc,
-        package=d.get("package", "").strip(),
-        eligibility_cgpa=float(d.get("eligibility_cgpa", 0) or 0),
-        eligibility_branch=d.get("eligibility_branch", "").strip().upper(),
-        eligibility_year=int(d["eligibility_year"]) if d.get("eligibility_year") else None,
+        package=_as_text(d.get("package")),
+        eligibility_cgpa=elig_cgpa,
+        eligibility_branch=_as_text(d.get("eligibility_branch")).upper(),
+        eligibility_year=elig_year,
         deadline=deadline
     )
     db.session.add(drive)

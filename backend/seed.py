@@ -16,6 +16,35 @@ def seed_admin():
     print("Admin seeded: ashuathu93@gmail.com / admin123")
 
 
+def seed_test_student_a():
+    """Guaranteed login for manual / CI checks: a@a.com / 123456 (upsert)."""
+    email = "a@a.com"
+    u = User.query.filter_by(email=email).first()
+    if u:
+        u.password = _pw("123456")
+        u.role = "student"
+        u.is_active = True
+        db.session.flush()
+        sp = u.student_profile
+        if sp:
+            sp.name = "Alex Test"
+            sp.branch = "CSE"
+            sp.cgpa = 9.0
+            sp.year = 2026
+            sp.phone = sp.phone or ""
+        else:
+            db.session.add(StudentProfile(
+                user_id=u.id, name="Alex Test", branch="CSE", cgpa=9.0, year=2026, phone=""))
+    else:
+        u = User(email=email, password=_pw("123456"), role="student", is_active=True)
+        db.session.add(u)
+        db.session.flush()
+        db.session.add(StudentProfile(
+            user_id=u.id, name="Alex Test", branch="CSE", cgpa=9.0, year=2026, phone=""))
+    db.session.commit()
+    print("Test student ready: a@a.com / 123456")
+
+
 def seed_demo_data():
     """Populate DB with demo students, companies, drives, and applications."""
     # Skip if already seeded

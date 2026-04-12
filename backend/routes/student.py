@@ -1,10 +1,16 @@
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, send_file
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from extensions import db, cache
 from models import User, StudentProfile, PlacementDrive, Application, CompanyProfile
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
+
+
+def _now_utc_naive():
+    """Match naive UTC deadlines stored in the DB (company create / seed)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 from werkzeug.utils import secure_filename
+from sqlalchemy.orm import joinedload
 import os
 
 student_bp = Blueprint("student", __name__)
@@ -25,6 +31,20 @@ def student_required(fn):
 def _profile():
     u = User.query.get(int(get_jwt_identity()))
     return u.student_profile if u else None
+
+
+def _ineligibility_reason(p, drive):
+    """None if student may apply; else human-readable reason (same rules as apply())."""
+    if drive.eligibility_cgpa and p.cgpa < drive.eligibility_cgpa:
+        return f"Requires minimum CGPA {drive.eligibility_cgpa} (yours: {p.cgpa})"
+    if drive.eligibility_branch:
+        allowed = [b.strip().upper() for b in drive.eligibility_branch.split(",")]
+        if p.branch.upper() not in allowed:
+            return f"Open to: {drive.eligibility_branch}. Your branch: {p.branch}"
+    if drive.eligibility_year and p.year != drive.eligibility_year:
+        return f"For batch year {drive.eligibility_year} only (yours: {p.year})"
+    return None
+
 
 @student_bp.route("/dashboard", methods=["GET"])
 @student_required
@@ -86,11 +106,15 @@ def upload_resume():
 
 @student_bp.route("/drives", methods=["GET"])
 @student_required
-@cache.cached(timeout=60, query_string=True)
 def get_drives():
-    q = PlacementDrive.query.filter_by(status="approved").filter(PlacementDrive.deadline > datetime.utcnow())
-    search = request.args.get("search","").strip()
-    branch = request.args.get("branch","").strip()
+    """Approved drives still accepting applications. Each row includes eligible + reason if not. Not cached."""
+    p = _profile()
+    if not p:
+        return jsonify({"error": "Not found"}), 404
+    now = _now_utc_naive()
+    q = PlacementDrive.query.filter_by(status="approved").filter(PlacementDrive.deadline > now)
+    search = request.args.get("search", "").strip()
+    branch = request.args.get("branch", "").strip()
     if search:
         q = q.join(CompanyProfile, PlacementDrive.company_id == CompanyProfile.id).filter(
             db.or_(PlacementDrive.job_title.ilike(f"%{search}%"),
@@ -98,16 +122,42 @@ def get_drives():
                    CompanyProfile.company_name.ilike(f"%{search}%")))
     if branch:
         q = q.filter(PlacementDrive.eligibility_branch.ilike(f"%{branch}%"))
-    p = _profile()
-    applied_ids = {a.drive_id for a in Application.query.filter_by(student_id=p.id).all()} if p else set()
+    applied_ids = {a.drive_id for a in Application.query.filter_by(student_id=p.id).all()}
+    rows = q.order_by(PlacementDrive.deadline.asc()).all()
+    out = []
+    for d in rows:
+        reason = _ineligibility_reason(p, d)
+        out.append({
+            "id": d.id, "company_name": d.company.company_name, "job_title": d.job_title,
+            "job_description": d.job_description, "package": d.package,
+            "eligibility_cgpa": d.eligibility_cgpa, "eligibility_branch": d.eligibility_branch,
+            "eligibility_year": d.eligibility_year,
+            "deadline": d.deadline.isoformat() if d.deadline else None,
+            "already_applied": d.id in applied_ids,
+            "eligible": reason is None,
+            "ineligibility_reason": reason,
+        })
+    return jsonify(out), 200
+
+
+@student_bp.route("/companies", methods=["GET"])
+@student_required
+def list_companies():
+    """Browse approved, active companies (for company search). Blacklisted excluded."""
+    search = request.args.get("search", "").strip()
+    q = CompanyProfile.query.filter_by(approval_status="approved", is_blacklisted=False).join(
+        User, CompanyProfile.user_id == User.id).filter(User.is_active.is_(True))
+    if search:
+        q = q.filter(CompanyProfile.company_name.ilike(f"%{search}%"))
+    items = q.order_by(CompanyProfile.company_name.asc()).all()
     return jsonify([{
-        "id": d.id, "company_name": d.company.company_name, "job_title": d.job_title,
-        "job_description": d.job_description, "package": d.package,
-        "eligibility_cgpa": d.eligibility_cgpa, "eligibility_branch": d.eligibility_branch,
-        "eligibility_year": d.eligibility_year,
-        "deadline": d.deadline.isoformat() if d.deadline else None,
-        "already_applied": d.id in applied_ids
-    } for d in q.order_by(PlacementDrive.deadline.asc()).all()]), 200
+        "id": c.id, "company_name": c.company_name, "hr_contact": c.hr_contact or "",
+        "website": c.website or "", "description": (c.description or "")[:280],
+        "open_drives": sum(
+            1 for d in c.drives
+            if d.status == "approved" and d.deadline > _now_utc_naive()
+        ),
+    } for c in items]), 200
 
 @student_bp.route("/drives/<int:did>/apply", methods=["POST"])
 @student_required
@@ -116,7 +166,7 @@ def apply(did):
     if not p: return jsonify({"error": "Not found"}), 404
     drive = PlacementDrive.query.get_or_404(did)
     if drive.status != "approved": return jsonify({"error": "Drive not accepting applications"}), 400
-    if drive.deadline and drive.deadline < datetime.utcnow(): return jsonify({"error": "Deadline passed"}), 400
+    if drive.deadline and drive.deadline < _now_utc_naive(): return jsonify({"error": "Deadline passed"}), 400
     if drive.eligibility_cgpa and p.cgpa < drive.eligibility_cgpa:
         return jsonify({"error": f"Min CGPA: {drive.eligibility_cgpa}, yours: {p.cgpa}"}), 400
     if drive.eligibility_branch:
@@ -134,31 +184,110 @@ def apply(did):
 @student_required
 def my_applications():
     p = _profile()
-    if not p: return jsonify({"error": "Not found"}), 404
-    return jsonify([{
-        "id": a.id, "drive_id": a.drive_id, "job_title": a.drive.job_title,
-        "company_name": a.drive.company.company_name, "package": a.drive.package,
-        "status": a.status, "applied_at": a.applied_at.isoformat(),
-        "deadline": a.drive.deadline.isoformat() if a.drive.deadline else None,
-        "interview_date": a.interview_date.isoformat() if a.interview_date else None,
-        "interview_link": a.interview_link, "interview_notes": a.interview_notes,
-    } for a in Application.query.filter_by(student_id=p.id).order_by(Application.applied_at.desc()).all()]), 200
+    if not p:
+        return jsonify({"error": "Student profile not found"}), 404
+    apps = (
+        Application.query.options(
+            joinedload(Application.drive).joinedload(PlacementDrive.company)
+        )
+        .filter_by(student_id=p.id)
+        .order_by(Application.applied_at.desc())
+        .all()
+    )
+    out = []
+    for a in apps:
+        if a.drive is None:
+            continue
+        co = a.drive.company
+        if co is None:
+            continue
+        out.append({
+            "id": a.id, "drive_id": a.drive_id, "job_title": a.drive.job_title,
+            "company_name": co.company_name, "package": a.drive.package,
+            "status": a.status, "applied_at": a.applied_at.isoformat(),
+            "deadline": a.drive.deadline.isoformat() if a.drive.deadline else None,
+            "interview_date": a.interview_date.isoformat() if a.interview_date else None,
+            "interview_link": a.interview_link, "interview_notes": a.interview_notes,
+        })
+    return jsonify(out), 200
+
+def _export_csv_sync(p):
+    import csv, io
+    apps = Application.query.filter_by(student_id=p.id).all()
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["Student ID", "Company Name", "Drive Title", "Application Status", "Applied Date", "Updated Date"])
+    for a in apps:
+        w.writerow([
+            p.id, a.drive.company.company_name, a.drive.job_title, a.status,
+            a.applied_at.strftime("%Y-%m-%d %H:%M"),
+            a.updated_at.strftime("%Y-%m-%d %H:%M") if a.updated_at else ""
+        ])
+    return out.getvalue()
+
 
 @student_bp.route("/export", methods=["POST"])
 @student_required
 def export_csv():
     p = _profile()
-    if not p: return jsonify({"error": "Not found"}), 404
+    if not p:
+        return jsonify({"error": "Not found"}), 404
     try:
         from tasks import export_student_applications
         task = export_student_applications.delay(p.id, p.user.email)
-        return jsonify({"message": "Export started! You'll get an email when ready.", "task_id": task.id}), 202
+        return jsonify({
+            "message": "Export started. You will get an email when the file is ready, or wait here for download.",
+            "task_id": task.id,
+        }), 202
     except Exception:
-        import csv, io
-        apps = Application.query.filter_by(student_id=p.id).all()
-        out = io.StringIO()
-        w = csv.writer(out)
-        w.writerow(["Student ID","Company Name","Drive Title","Status","Applied Date"])
-        for a in apps:
-            w.writerow([p.id, a.drive.company.company_name, a.drive.job_title, a.status, a.applied_at.isoformat()])
-        return jsonify({"message": "Export complete!", "csv_data": out.getvalue()}), 200
+        data = _export_csv_sync(p)
+        return jsonify({"message": "Export complete (sync).", "csv_data": data}), 200
+
+
+@student_bp.route("/export/status/<task_id>", methods=["GET"])
+@student_required
+def export_status(task_id):
+    p = _profile()
+    if not p:
+        return jsonify({"error": "Not found"}), 404
+    from celery.result import AsyncResult
+    from tasks import celery_app
+    ar = AsyncResult(task_id, app=celery_app)
+    if ar.state == "PENDING":
+        return jsonify({"state": "PENDING"}), 200
+    if ar.state == "FAILURE":
+        return jsonify({"state": "FAILURE", "error": "Export failed"}), 200
+    if ar.state == "SUCCESS":
+        result = ar.result or {}
+        if not isinstance(result, dict):
+            return jsonify({"state": "FAILURE", "error": "Invalid result"}), 200
+        if result.get("error"):
+            return jsonify({"state": "FAILURE", "error": result["error"]}), 200
+        if result.get("student_id") != p.id:
+            return jsonify({"error": "Forbidden"}), 403
+        return jsonify({
+            "state": "SUCCESS",
+            "file": result.get("file"),
+            "download_url": f"/api/student/export/download/{result['file']}" if result.get("file") else None,
+        }), 200
+    return jsonify({"state": ar.state}), 200
+
+
+@student_bp.route("/export/download/<path:filename>", methods=["GET"])
+@student_required
+def export_download(filename):
+    p = _profile()
+    if not p:
+        return jsonify({"error": "Not found"}), 404
+    safe = secure_filename(filename)
+    if not safe or safe != filename:
+        return jsonify({"error": "Invalid filename"}), 400
+    prefix = f"export_{p.id}_"
+    if not safe.startswith(prefix) or not safe.endswith(".csv"):
+        return jsonify({"error": "Forbidden"}), 403
+    backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    export_dir = os.path.join(backend_root, "exports")
+    filepath = os.path.join(export_dir, safe)
+    if not os.path.isfile(filepath):
+        return jsonify({"error": "File not found"}), 404
+    return send_file(filepath, as_attachment=True, download_name=safe, mimetype="text/csv")

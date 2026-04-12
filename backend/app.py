@@ -2,7 +2,7 @@ from flask import Flask, render_template, send_from_directory
 from flask_cors import CORS
 from config import Config
 from extensions import db, jwt, cache, mail
-from seed import seed_admin, seed_demo_data
+from seed import seed_admin, seed_demo_data, seed_test_student_a
 import os
 
 
@@ -40,6 +40,7 @@ def create_app():
         db.create_all()
         seed_admin()
         seed_demo_data()
+        seed_test_student_a()
 
     @app.route("/")
     def index():

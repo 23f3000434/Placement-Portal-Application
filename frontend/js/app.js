@@ -35,6 +35,7 @@ const CompanyLayout=makeLayout([
 const StudentLayout=makeLayout([
   {to:"/student",icon:"bi bi-speedometer2",label:"Dashboard"},
   {to:"/student/drives",icon:"bi bi-briefcase",label:"Browse Drives"},
+  {to:"/student/companies",icon:"bi bi-building",label:"Companies"},
   {to:"/student/applications",icon:"bi bi-file-text",label:"My Applications"},
   {to:"/student/profile",icon:"bi bi-person",label:"Profile"}
 ]);
@@ -268,8 +269,12 @@ const CompanyProfileEdit={
 
 const CompanyDrives={
   template:`<div>
-    <div class="d-flex justify-content-between mb-3"><h4>My Drives</h4><button class="btn btn-dark btn-sm" @click="showModal=true"><i class="bi bi-plus"></i> New Drive</button></div>
-    <div v-if="!drives.length" class="empty"><i class="bi bi-briefcase"></i><p>No drives yet</p></div>
+    <div class="d-flex justify-content-between mb-3"><h4>My Drives</h4><button class="btn btn-dark btn-sm" @click="openModal" :disabled="approvalStatus && approvalStatus!=='approved'"><i class="bi bi-plus"></i> New Drive</button></div>
+    <div v-if="loadErr" class="alert alert-danger py-2">{{loadErr}}</div>
+    <div v-if="approvalStatus==='pending'" class="alert alert-warning py-2">Your company is <strong>pending admin approval</strong>. You can browse the dashboard but <strong>cannot create drives</strong> until an admin approves your registration.</div>
+    <div v-if="approvalStatus==='rejected'" class="alert alert-danger py-2">Your company registration was <strong>rejected</strong>. Contact the placement cell.</div>
+    <div v-if="isBlacklisted" class="alert alert-danger py-2">Your company is <strong>blacklisted</strong>. You cannot create drives.</div>
+    <div v-if="!loadErr && !drives.length" class="empty"><i class="bi bi-briefcase"></i><p>No drives yet</p><p v-if="approvalStatus==='approved'" class="small text-muted mt-2">Click &quot;New Drive&quot; to add one.</p></div>
     <div class="row g-3"><div class="col-md-6" v-for="d in drives"><div class="card">
       <div class="card-header d-flex justify-content-between"><strong>{{d.job_title}}</strong><span class="badge" :class="'badge-'+d.status">{{d.status}}</span></div>
       <div class="card-body">
@@ -278,23 +283,72 @@ const CompanyDrives={
         <hr><small class="text-muted">Deadline: {{fmtDate(d.deadline)}}</small>
         <div class="mt-2"><router-link :to="'/company/drives/'+d.id+'/apps'" class="btn btn-dark btn-sm">View Applications</router-link></div>
       </div></div></div></div>
-    <div v-if="showModal" class="modal d-block" style="background:rgba(0,0,0,.5)"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5>Create Drive</h5><button class="btn-close" @click="showModal=false"></button></div>
+    <div v-if="showModal" class="ppa-modal-backdrop" @click.self="showModal=false"><div class="ppa-modal-box modal-dialog modal-lg m-0"><div class="modal-content"><div class="modal-header"><h5>Create Drive</h5><button type="button" class="btn-close" @click="showModal=false"></button></div>
       <form @submit.prevent="create"><div class="modal-body">
         <div v-if="formErr" class="alert alert-danger py-2">{{formErr}}</div>
         <div class="mb-3"><label class="form-label">Job Title *</label><input class="form-control" v-model="f.job_title" required></div>
         <div class="mb-3"><label class="form-label">Description *</label><textarea class="form-control" v-model="f.job_description" rows="3" required></textarea></div>
         <div class="row"><div class="col-md-4 mb-3"><label class="form-label">Package</label><input class="form-control" v-model="f.package" placeholder="e.g. 6 LPA"></div>
-        <div class="col-md-4 mb-3"><label class="form-label">Min CGPA</label><input type="number" step="0.1" min="0" max="10" class="form-control" v-model="f.eligibility_cgpa"></div>
-        <div class="col-md-4 mb-3"><label class="form-label">Year</label><input type="number" class="form-control" v-model="f.eligibility_year"></div></div>
+        <div class="col-md-4 mb-3"><label class="form-label">Min CGPA</label><input type="number" step="0.1" min="0" max="10" class="form-control" v-model.number="f.eligibility_cgpa"></div>
+        <div class="col-md-4 mb-3"><label class="form-label">Year (optional)</label><input type="number" class="form-control" v-model="f.eligibility_year" placeholder="e.g. 2026"></div></div>
         <div class="row"><div class="col-md-6 mb-3"><label class="form-label">Branches (comma-sep)</label><input class="form-control" v-model="f.eligibility_branch" placeholder="CSE,ECE,IT"></div>
         <div class="col-md-6 mb-3"><label class="form-label">Deadline *</label><input type="datetime-local" class="form-control" v-model="f.deadline" required></div></div>
-      </div><div class="modal-footer"><button type="button" class="btn btn-outline-dark" @click="showModal=false">Cancel</button><button class="btn btn-dark">Create</button></div></form>
-    </div></div></div></div>`,
-  data(){return{drives:[],showModal:false,formErr:"",f:{job_title:"",job_description:"",package:"",eligibility_cgpa:0,eligibility_branch:"",eligibility_year:"",deadline:""}}},
-  mounted(){this.load()},
+      </div><div class="modal-footer"><button type="button" class="btn btn-outline-dark" @click="showModal=false">Cancel</button><button type="submit" class="btn btn-dark">Create</button></div></form>
+    </div></div></div>`,
+  data(){return{drives:[],showModal:false,formErr:"",loadErr:"",approvalStatus:null,isBlacklisted:false,f:{job_title:"",job_description:"",package:"",eligibility_cgpa:0,eligibility_branch:"",eligibility_year:"",deadline:""}}},
+  mounted(){this.init()},
   methods:{
-    async load(){try{this.drives=(await api.get("/company/drives")).data}catch(e){console.error("CompanyDrives",e)}},
-    async create(){this.formErr="";try{await api.post("/company/drives",this.f);this.showModal=false;this.f={job_title:"",job_description:"",package:"",eligibility_cgpa:0,eligibility_branch:"",eligibility_year:"",deadline:""};this.load()}catch(e){this.formErr=e.response?.data?.error||"Failed"}}
+    async init(){
+      this.loadErr="";
+      try{
+        const prof=(await api.get("/company/profile")).data;
+        this.approvalStatus=prof.approval_status||null;
+        this.isBlacklisted=!!prof.is_blacklisted;
+      }catch(e){
+        this.loadErr=e.response?.data?.error||"Could not load company profile";
+      }
+      await this.load();
+    },
+    openModal(){
+      if(this.approvalStatus&&this.approvalStatus!=="approved"){this.formErr="Wait for admin approval before creating drives.";this.showModal=true;return;}
+      this.formErr="";this.showModal=true;
+    },
+    async load(){
+      try{
+        const data=(await api.get("/company/drives")).data;
+        this.drives=Array.isArray(data)?data:[];
+      }catch(e){
+        console.error("CompanyDrives",e);
+        this.drives=[];
+        const msg=e.response?.data?.error||e.message||"Could not load drives. Try logging in again.";
+        this.loadErr=this.loadErr?`${this.loadErr} ${msg}`:msg;
+      }
+    },
+    async create(){
+      this.formErr="";
+      try{
+        const payload={...this.f};
+        if(!payload.deadline){this.formErr="Deadline is required";return;}
+        const t=new Date(payload.deadline);
+        if(Number.isNaN(t.getTime())){this.formErr="Invalid deadline";return;}
+        payload.deadline=t.toISOString();
+        if(payload.eligibility_year===""||payload.eligibility_year==null||payload.eligibility_year===undefined)
+          payload.eligibility_year=null;
+        else{
+          const y=parseInt(String(payload.eligibility_year),10);
+          if(Number.isNaN(y)){this.formErr="Enter a valid batch year or leave it empty";return;}
+          payload.eligibility_year=y;
+        }
+        const r=await api.post("/company/drives",payload);
+        if(r.status!==201){this.formErr=(r.data&&r.data.error)||"Could not create drive";return;}
+        this.showModal=false;
+        this.f={job_title:"",job_description:"",package:"",eligibility_cgpa:0,eligibility_branch:"",eligibility_year:"",deadline:""};
+        await this.load();
+      }catch(e){
+        const d=e.response&&e.response.data;
+        this.formErr=(d&&d.error)||e.message||"Failed to create drive";
+      }
+    }
   }
 };
 
@@ -331,17 +385,20 @@ const StudentDashboard={
 };
 
 const StudentDrives={
-  template:`<div><h4 class="mb-3">Available Drives</h4>
+  template:`<div><h4 class="mb-2">Available Drives</h4>
+    <p class="text-muted small mb-3">All open, admin-approved drives. You can apply only when you meet CGPA, branch, and batch-year rules (see each card).</p>
     <div class="row mb-3"><div class="col-md-4"><input class="form-control" placeholder="Search drives or company..." v-model="search" @input="load"></div>
     <div class="col-md-3"><select class="form-select" v-model="branch" @change="load"><option value="">All Branches</option><option v-for="b in branches" :value="b">{{b}}</option></select></div></div>
-    <div v-if="!drives.length" class="empty"><i class="bi bi-briefcase"></i><p>No drives available</p></div>
-    <div class="row g-3"><div class="col-md-6" v-for="d in drives"><div class="card">
+    <div v-if="!drives.length" class="empty"><i class="bi bi-briefcase"></i><p>No open drives right now</p><p class="small text-muted">Ask your placement cell to approve company drives, or check back after new postings.</p></div>
+    <div class="row g-3"><div class="col-md-6" v-for="d in drives"><div class="card" :class="{'opacity-75':!d.eligible&&!d.already_applied}">
       <div class="card-header d-flex justify-content-between"><div><strong>{{d.job_title}}</strong><br><small class="text-muted">{{d.company_name}}</small></div><span class="badge bg-dark">{{d.package||"N/A"}}</span></div>
       <div class="card-body">
         <p class="text-muted small mb-2">{{(d.job_description||"").substring(0,150)}}...</p>
-        <div class="row text-center mb-3"><div class="col"><small class="text-muted">Min CGPA</small><br><strong>{{d.eligibility_cgpa||"Any"}}</strong></div><div class="col"><small class="text-muted">Branches</small><br><strong>{{d.eligibility_branch||"All"}}</strong></div><div class="col"><small class="text-muted">Deadline</small><br><strong>{{fmtDate(d.deadline)}}</strong></div></div>
-        <button v-if="!d.already_applied" class="btn btn-dark w-100" @click="apply(d.id)" :disabled="applying===d.id">{{applying===d.id?"Applying...":"Apply Now"}}</button>
-        <button v-else class="btn btn-outline-dark w-100" disabled><i class="bi bi-check"></i> Applied</button>
+        <div v-if="d.ineligibility_reason" class="alert alert-warning py-2 small mb-2"><strong>Not eligible:</strong> {{d.ineligibility_reason}}</div>
+        <div class="row text-center mb-3"><div class="col"><small class="text-muted">Min CGPA</small><br><strong>{{d.eligibility_cgpa||"Any"}}</strong></div><div class="col"><small class="text-muted">Branches</small><br><strong>{{d.eligibility_branch||"All"}}</strong></div><div class="col"><small class="text-muted">Batch year</small><br><strong>{{d.eligibility_year||"Any"}}</strong></div><div class="col"><small class="text-muted">Deadline</small><br><strong>{{fmtDate(d.deadline)}}</strong></div></div>
+        <button v-if="!d.already_applied&&d.eligible" class="btn btn-dark w-100" @click="apply(d.id)" :disabled="applying===d.id">{{applying===d.id?"Applying...":"Apply Now"}}</button>
+        <button v-if="!d.already_applied&&!d.eligible" type="button" class="btn btn-outline-secondary w-100" disabled>Update profile to match criteria</button>
+        <button v-if="d.already_applied" class="btn btn-outline-dark w-100" disabled><i class="bi bi-check"></i> Applied</button>
       </div></div></div></div></div>`,
   data(){return{drives:[],search:"",branch:"",applying:null,branches:["CSE","ECE","EE","ME","CE","IT","CH","BT"]}},
   mounted(){this.load()},
@@ -351,19 +408,82 @@ const StudentDrives={
   }
 };
 
+const StudentCompanies={
+  template:`<div><h4 class="mb-2">Companies</h4>
+    <p class="text-muted small mb-3">Approved recruiters on the portal. Search by company name; open drives counts upcoming deadlines only.</p>
+    <div class="row mb-3"><div class="col-md-5"><input class="form-control" placeholder="Search company name..." v-model="search" @input="load"></div></div>
+    <div v-if="!items.length" class="empty"><i class="bi bi-building"></i><p>{{search?'No companies match your search.':'No approved companies on the portal yet.'}}</p></div>
+    <div class="row g-3" v-else><div class="col-md-6" v-for="c in items" :key="c.id"><div class="card h-100">
+      <div class="card-body">
+        <h5 class="card-title">{{c.company_name}}</h5>
+        <p class="small text-muted mb-2" v-if="c.description">{{c.description}}</p>
+        <p class="small mb-1" v-if="c.hr_contact"><strong>HR:</strong> {{c.hr_contact}}</p>
+        <p class="small mb-2" v-if="c.website"><a :href="c.website" target="_blank" rel="noopener">Website</a></p>
+        <span class="badge bg-dark">{{c.open_drives}} open drive(s)</span>
+      </div></div></div></div></div>`,
+  data(){return{items:[],search:""}},
+  mounted(){this.load()},
+  methods:{
+    async load(){try{const p={};if(this.search)p.search=this.search;this.items=(await api.get("/student/companies",{params:p})).data}catch(e){console.error("StudentCompanies",e)}}
+  }
+};
+
 const StudentApplications={
   template:`<div>
     <div class="d-flex justify-content-between mb-3"><h4>My Applications</h4><button class="btn btn-outline-dark btn-sm" @click="exportCSV" :disabled="exporting"><i class="bi bi-download"></i> Export CSV</button></div>
+    <div v-if="loadErr" class="alert alert-danger py-2">{{loadErr}} <button type="button" class="btn btn-sm btn-outline-dark ms-2" @click="load">Retry</button></div>
     <div v-if="msg" class="alert alert-info py-2">{{msg}}</div>
-    <div v-if="!apps.length" class="empty"><i class="bi bi-file-text"></i><p>No applications yet</p><router-link to="/student/drives" class="btn btn-dark">Browse Drives</router-link></div>
-    <div class="table-responsive" v-else><table class="table"><thead><tr><th>#</th><th>Company</th><th>Position</th><th>Package</th><th>Status</th><th>Applied</th><th>Deadline</th></tr></thead><tbody>
+    <div v-if="!loadErr && !apps.length" class="empty"><i class="bi bi-file-text"></i><p>No applications yet</p><router-link to="/student/drives" class="btn btn-dark">Browse Drives</router-link></div>
+    <div class="table-responsive" v-if="!loadErr && apps.length"><table class="table"><thead><tr><th>#</th><th>Company</th><th>Position</th><th>Package</th><th>Status</th><th>Applied</th><th>Deadline</th></tr></thead><tbody>
       <tr v-for="(a,i) in apps"><td>{{i+1}}</td><td><strong>{{a.company_name}}</strong></td><td>{{a.job_title}}</td><td>{{a.package||"-"}}</td>
       <td><span class="badge" :class="'badge-'+a.status">{{a.status}}</span></td><td>{{fmtDate(a.applied_at)}}</td><td>{{fmtDate(a.deadline)}}</td></tr></tbody></table></div></div>`,
-  data(){return{apps:[],exporting:false,msg:""}},
+  data(){return{apps:[],exporting:false,msg:"",loadErr:""}},
   mounted(){this.load()},
   methods:{
-    async load(){try{this.apps=(await api.get("/student/applications")).data}catch(e){console.error("StudentApplications",e)}},
-    async exportCSV(){this.exporting=true;try{const r=await api.post("/student/export");this.msg=r.data.message;if(r.data.csv_data){const b=new Blob([r.data.csv_data],{type:"text/csv"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download="applications.csv";a.click();URL.revokeObjectURL(u)}}catch(e){this.msg="Export failed"}finally{this.exporting=false}}
+    async load(){
+      this.loadErr="";
+      try{
+        const data=(await api.get("/student/applications")).data;
+        this.apps=Array.isArray(data)?data:[];
+      }catch(e){
+        console.error("StudentApplications",e);
+        this.apps=[];
+        this.loadErr=e.response?.data?.error||e.message||"Could not load applications.";
+      }
+    },
+    async exportCSV(){
+      this.exporting=true;this.msg="";
+      try{
+        const r=await api.post("/student/export");
+        if(r.status===202&&r.data.task_id){
+          this.msg="Export running in background…";
+          await this.pollExport(r.data.task_id);
+          return;
+        }
+        this.msg=r.data.message||"Done";
+        if(r.data.csv_data){
+          const b=new Blob([r.data.csv_data],{type:"text/csv;charset=utf-8"});
+          const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download="applications.csv";a.click();URL.revokeObjectURL(u);
+        }
+      }catch(e){this.msg=e.response?.data?.error||"Export failed"}
+      finally{this.exporting=false}
+    },
+    async pollExport(taskId){
+      for(let i=0;i<80;i++){
+        await new Promise(res=>setTimeout(res,1500));
+        try{
+          const s=await api.get("/student/export/status/"+taskId);
+          if(s.data.state==="SUCCESS"&&s.data.file){
+            const b=await api.get("/student/export/download/"+encodeURIComponent(s.data.file),{responseType:"blob"});
+            const u=URL.createObjectURL(b.data);const a=document.createElement("a");a.href=u;a.download=s.data.file;a.click();URL.revokeObjectURL(u);
+            this.msg="Download started. You may also use the link in your email.";
+            return;
+          }
+          if(s.data.state==="FAILURE"){this.msg="Export failed.";return;}
+        }catch(err){}
+      }
+      this.msg="Export is taking longer than usual — check your email when it finishes.";
+    }
   }
 };
 
@@ -407,6 +527,7 @@ const routes=[
   {path:"/student",component:StudentLayout,children:[
     {path:"",component:StudentDashboard},
     {path:"drives",component:StudentDrives},
+    {path:"companies",component:StudentCompanies},
     {path:"applications",component:StudentApplications},
     {path:"profile",component:StudentProfilePage}
   ]}
@@ -426,5 +547,7 @@ router.beforeEach((to,from,next)=>{
 });
 
 const app=Vue.createApp({});
+// Templates use fmtDate(...); expose from api.js as instance property
+app.config.globalProperties.fmtDate=fmtDate;
 app.use(router);
 app.mount("#app");

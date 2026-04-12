@@ -56,7 +56,8 @@ def _send_gchat_webhook(text):
 def send_daily_reminders():
     """
     Scheduled: runs daily at 9 AM IST.
-    Sends reminders about drives with deadlines in next 3 days.
+    For each approved drive whose deadline is in the next 3 days, emails every active student
+    who has not applied yet (no CGPA/branch/year filter — matches project brief wording).
     Uses Google Chat Webhook if configured, falls back to email, falls back to console.
     """
     app = _app()
@@ -74,21 +75,21 @@ def send_daily_reminders():
         count = 0
         for d in drives:
             for s in StudentProfile.query.all():
-                eligible = True
-                if d.eligibility_cgpa and s.cgpa < d.eligibility_cgpa:
-                    eligible = False
-                if d.eligibility_branch:
-                    allowed = [b.strip().upper() for b in d.eligibility_branch.split(",")]
-                    if s.branch.upper() not in allowed:
-                        eligible = False
-                already = Application.query.filter_by(student_id=s.id, drive_id=d.id).first()
-                if already:
+                if not s.user or not s.user.is_active:
                     continue
-                if eligible:
-                    msg = f"Reminder: '{d.job_title}' by {d.company.company_name} — deadline {d.deadline.strftime('%d %b %Y')}. Apply now!"
-                    _send_gchat_webhook(f"@{s.name} ({s.user.email}): {msg}")
-                    _send_email(app, s.user.email, f"Deadline Reminder: {d.job_title}", f"<p>Hi {s.name},</p><p>{msg}</p>")
-                    count += 1
+                if Application.query.filter_by(student_id=s.id, drive_id=d.id).first():
+                    continue
+                msg = (
+                    f"Reminder: '{d.job_title}' by {d.company.company_name} — "
+                    f"deadline {d.deadline.strftime('%d %b %Y')}. "
+                    f"Open the Placement Portal to review eligibility and apply if you qualify."
+                )
+                _send_gchat_webhook(f"@{s.name} ({s.user.email}): {msg}")
+                _send_email(
+                    app, s.user.email, f"Deadline Reminder: {d.job_title}",
+                    f"<p>Hi {s.name},</p><p>{msg}</p>",
+                )
+                count += 1
 
         return {"status": "success", "reminders_sent": count}
 
@@ -103,12 +104,18 @@ def send_monthly_report():
     app = _app()
     with app.app_context():
         from models import User, PlacementDrive, Application
+        from extensions import db
         now = datetime.utcnow()
         ms = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         ps = ms.replace(month=ms.month - 1) if ms.month > 1 else ms.replace(year=ms.year - 1, month=12)
 
-        drives_count = PlacementDrive.query.filter(
-            PlacementDrive.created_at >= ps, PlacementDrive.created_at < ms).count()
+        # Drives "conducted" in period: approved drives that received at least one application in the month
+        from sqlalchemy import func
+        drives_conducted = db.session.query(func.count(func.distinct(Application.drive_id))).filter(
+            Application.applied_at >= ps, Application.applied_at < ms).scalar() or 0
+        new_drives_count = PlacementDrive.query.filter(
+            PlacementDrive.created_at >= ps, PlacementDrive.created_at < ms,
+            PlacementDrive.status == "approved").count()
         apps_count = Application.query.filter(
             Application.applied_at >= ps, Application.applied_at < ms).count()
         selected_count = Application.query.filter(
@@ -132,9 +139,10 @@ def send_monthly_report():
             <h2>{month_name}</h2>
             <table>
                 <tr><th>Metric</th><th>Count</th></tr>
-                <tr><td>Placement Drives Conducted</td><td class="val">{drives_count}</td></tr>
-                <tr><td>Total Applications Received</td><td class="val">{apps_count}</td></tr>
-                <tr><td>Students Selected</td><td class="val">{selected_count}</td></tr>
+                <tr><td>Drives with applicant activity (distinct drives)</td><td class="val">{drives_conducted}</td></tr>
+                <tr><td>New approved drives created in period</td><td class="val">{new_drives_count}</td></tr>
+                <tr><td>Total applications received</td><td class="val">{apps_count}</td></tr>
+                <tr><td>Applications marked selected</td><td class="val">{selected_count}</td></tr>
             </table>
             <p style="color:#666;margin-top:20px;">Auto-generated on {now.strftime('%Y-%m-%d %H:%M')} by Placement Portal.</p>
         </body></html>
@@ -152,7 +160,7 @@ def send_monthly_report():
         if admin:
             _send_email(app, admin.email, f"Monthly Placement Report — {month_name}", html)
             _send_gchat_webhook(
-                f"Monthly Report for {month_name}: {drives_count} drives, "
+                f"Monthly Report for {month_name}: {drives_conducted} drives with applications, "
                 f"{apps_count} applications, {selected_count} selected"
             )
 
@@ -202,4 +210,4 @@ def export_student_applications(student_id, email):
         )
         _send_gchat_webhook(f"CSV export ready for student {email}: {fname}")
 
-        return {"status": "success", "file": fname, "email": email}
+        return {"status": "success", "file": fname, "email": email, "student_id": student_id}
