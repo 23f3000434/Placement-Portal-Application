@@ -21,7 +21,7 @@ def _app():
 
 
 def _send_email(app, to, subject, html_body):
-    """Send email using Flask-Mail. Falls back to print if mail not configured."""
+    """Send email using Flask-Mail. Falls back to console log if not configured."""
     try:
         from flask_mail import Message
         from extensions import mail
@@ -35,7 +35,7 @@ def _send_email(app, to, subject, html_body):
 
 
 def _send_gchat_webhook(text):
-    """Send message via Google Chat Webhook. Configure GCHAT_WEBHOOK_URL env var."""
+    """Send message via Google Chat Webhook. Set GCHAT_WEBHOOK_URL env var."""
     url = os.environ.get("GCHAT_WEBHOOK_URL", "")
     if not url:
         print(f"[GCHAT WEBHOOK] {text}")
@@ -47,48 +47,7 @@ def _send_gchat_webhook(text):
         urllib.request.urlopen(req)
         return True
     except Exception as e:
-        print(f"[GCHAT WEBHOOK FAILED] {e} — Message: {text}")
-        return False
-
-
-def _generate_report_html(month_name, drives_count, apps_count, selected_count, now):
-    """Generate HTML report content."""
-    return f"""
-    <html><head><style>
-        body {{ font-family: Arial, sans-serif; padding: 20px; background: #fff; color: #111; }}
-        h1 {{ border-bottom: 2px solid #111; padding-bottom: 10px; }}
-        table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
-        th, td {{ border: 1px solid #333; padding: 12px; text-align: left; }}
-        th {{ background: #111; color: #fff; }}
-        tr:nth-child(even) {{ background: #f5f5f5; }}
-        .val {{ font-size: 1.5em; font-weight: bold; }}
-    </style></head>
-    <body>
-        <h1>Monthly Placement Activity Report</h1>
-        <h2>{month_name}</h2>
-        <table>
-            <tr><th>Metric</th><th>Count</th></tr>
-            <tr><td>Placement Drives Conducted</td><td class="val">{drives_count}</td></tr>
-            <tr><td>Total Applications Received</td><td class="val">{apps_count}</td></tr>
-            <tr><td>Students Selected</td><td class="val">{selected_count}</td></tr>
-        </table>
-        <p style="color:#666;margin-top:20px;">Auto-generated on {now.strftime('%Y-%m-%d %H:%M')} by Placement Portal.</p>
-    </body></html>
-    """
-
-
-def _html_to_pdf(html_content, pdf_path):
-    """Convert HTML to PDF using xhtml2pdf. Returns True if successful."""
-    try:
-        from xhtml2pdf import pisa
-        with open(pdf_path, "wb") as f:
-            status = pisa.CreatePDF(io.StringIO(html_content), dest=f)
-        return not status.err
-    except ImportError:
-        print("[PDF] xhtml2pdf not installed — skipping PDF generation. Run: pip install xhtml2pdf")
-        return False
-    except Exception as e:
-        print(f"[PDF] Failed to generate PDF: {e}")
+        print(f"[GCHAT WEBHOOK FAILED] {e}")
         return False
 
 
@@ -115,7 +74,6 @@ def send_daily_reminders():
         count = 0
         for d in drives:
             for s in StudentProfile.query.all():
-                # Check eligibility
                 eligible = True
                 if d.eligibility_cgpa and s.cgpa < d.eligibility_cgpa:
                     eligible = False
@@ -123,11 +81,9 @@ def send_daily_reminders():
                     allowed = [b.strip().upper() for b in d.eligibility_branch.split(",")]
                     if s.branch.upper() not in allowed:
                         eligible = False
-                # Skip if already applied
                 already = Application.query.filter_by(student_id=s.id, drive_id=d.id).first()
                 if already:
                     continue
-
                 if eligible:
                     msg = f"Reminder: '{d.job_title}' by {d.company.company_name} — deadline {d.deadline.strftime('%d %b %Y')}. Apply now!"
                     _send_gchat_webhook(f"@{s.name} ({s.user.email}): {msg}")
@@ -137,12 +93,12 @@ def send_daily_reminders():
         return {"status": "success", "reminders_sent": count}
 
 
-# ── Task B: Monthly Activity Report (HTML + PDF via Email) ──
+# ── Task B: Monthly Activity Report (HTML via Email) ──
 @celery_app.task(name="tasks.send_monthly_report")
 def send_monthly_report():
     """
     Scheduled: runs on 1st of every month at 8 AM IST.
-    Generates both HTML and PDF reports, saves files, and sends to admin via email.
+    Generates HTML report, saves file, and sends to admin via email.
     """
     app = _app()
     with app.app_context():
@@ -160,37 +116,47 @@ def send_monthly_report():
             Application.status == "selected").count()
 
         month_name = ps.strftime("%B %Y")
-        html = _generate_report_html(month_name, drives_count, apps_count, selected_count, now)
 
-        # Save reports
-        rdir = os.path.join(os.path.dirname(__file__), "reports")
-        os.makedirs(rdir, exist_ok=True)
+        html = f"""
+        <html><head><style>
+            body {{ font-family: Arial, sans-serif; padding: 20px; background: #fff; color: #111; }}
+            h1 {{ border-bottom: 2px solid #111; padding-bottom: 10px; }}
+            table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
+            th, td {{ border: 1px solid #333; padding: 12px; text-align: left; }}
+            th {{ background: #111; color: #fff; }}
+            tr:nth-child(even) {{ background: #f5f5f5; }}
+            .val {{ font-size: 1.5em; font-weight: bold; }}
+        </style></head>
+        <body>
+            <h1>Monthly Placement Activity Report</h1>
+            <h2>{month_name}</h2>
+            <table>
+                <tr><th>Metric</th><th>Count</th></tr>
+                <tr><td>Placement Drives Conducted</td><td class="val">{drives_count}</td></tr>
+                <tr><td>Total Applications Received</td><td class="val">{apps_count}</td></tr>
+                <tr><td>Students Selected</td><td class="val">{selected_count}</td></tr>
+            </table>
+            <p style="color:#666;margin-top:20px;">Auto-generated on {now.strftime('%Y-%m-%d %H:%M')} by Placement Portal.</p>
+        </body></html>
+        """
 
         # Save HTML report
+        rdir = os.path.join(os.path.dirname(__file__), "reports")
+        os.makedirs(rdir, exist_ok=True)
         html_fname = f"report_{ps.strftime('%Y_%m')}.html"
         with open(os.path.join(rdir, html_fname), "w") as f:
             f.write(html)
 
-        # Generate PDF report
-        pdf_fname = f"report_{ps.strftime('%Y_%m')}.pdf"
-        pdf_path = os.path.join(rdir, pdf_fname)
-        pdf_generated = _html_to_pdf(html, pdf_path)
-
         # Send to admin via email
         admin = User.query.filter_by(role="admin").first()
         if admin:
-            report_type = "HTML + PDF" if pdf_generated else "HTML"
             _send_email(app, admin.email, f"Monthly Placement Report — {month_name}", html)
             _send_gchat_webhook(
                 f"Monthly Report for {month_name}: {drives_count} drives, "
-                f"{apps_count} applications, {selected_count} selected ({report_type})"
+                f"{apps_count} applications, {selected_count} selected"
             )
 
-        return {
-            "status": "success", "html_file": html_fname,
-            "pdf_file": pdf_fname if pdf_generated else None,
-            "month": month_name
-        }
+        return {"status": "success", "html_file": html_fname, "month": month_name}
 
 
 # ── Task C: Export Student Applications as CSV (User-Triggered Async) ──
@@ -221,7 +187,6 @@ def export_student_applications(student_id, email):
                 a.updated_at.strftime("%Y-%m-%d %H:%M") if a.updated_at else ""
             ])
 
-        # Save CSV file
         export_dir = os.path.join(os.path.dirname(__file__), "exports")
         os.makedirs(export_dir, exist_ok=True)
         fname = f"export_{student_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
